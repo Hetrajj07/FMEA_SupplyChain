@@ -15,6 +15,7 @@ import json
 import re
 import logging
 from pathlib import Path
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -275,10 +276,9 @@ class LLMExtractor:
         logger.info(f"Batch extracting from {len(texts)} texts")
         
         results = []
-        for i, text in enumerate(texts):
-            if i % 10 == 0:
-                logger.info(f"Processing text {i+1}/{len(texts)}")
-            
+        
+        # Use tqdm for progress bar 
+        for text in tqdm(texts, desc="Extracting FMEA information", unit="text"):
             extracted = self.extract_failure_info(text)
             results.append(extracted)
         

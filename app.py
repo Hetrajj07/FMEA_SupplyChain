@@ -24,6 +24,7 @@ from preprocessing import DataPreprocessor
 from llm_extractor import LLMExtractor
 from risk_scoring import RiskScoringEngine
 from ocr_processor import OCRProcessor
+from history_tracker import FMEAHistoryTracker
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -351,11 +352,12 @@ def main():
         """)
     
     # Main content area
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📝 Generate FMEA", 
         "🎯 PFMEA Generator", 
         "🚚 Supply Chain Risk",
-        "📊 Analytics", 
+        "📊 Analytics",
+        "📈 History & Trends",
         "ℹ️ Help"
     ])
     
@@ -544,6 +546,11 @@ def main():
         # Display results
         if 'fmea_df' in st.session_state:
             st.success("✅ FMEA Generated Successfully!")
+            
+            # Auto-save the run
+            tracker = FMEAHistoryTracker("history")
+            run_id = tracker.save_run(st.session_state['fmea_df'], label=f"Run {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            st.caption(f"💾 Run saved (ID: {run_id})")
             
             fmea_df = st.session_state['fmea_df']
             
@@ -1338,6 +1345,158 @@ def main():
             st.info("Generate an FMEA first to see analytics.")
     
     with tab5:
+        st.markdown('<div class="sub-header">📈 History & Trends</div>', unsafe_allow_html=True)
+        
+        tracker = FMEAHistoryTracker("history")
+        runs = tracker.list_runs()
+        
+        if not runs:
+            st.info("No FMEA runs saved yet. Generate a FMEA to get started!")
+        else:
+            # Create tabs for different views
+            history_view1, history_view2 = st.tabs(["📊 Run Comparison", "📈 Trend Chart"])
+            
+            with history_view1:
+                st.markdown("### Compare Two Runs")
+                
+                col1, col2 = st.columns(2)
+                
+                # Run selection dropdowns
+                run_labels = [f"{run['label']} ({run['timestamp'][:10]})" for run in runs]
+                run_ids = [run['run_id'] for run in runs]
+                
+                with col1:
+                    selected_run1_idx = st.selectbox(
+                        "Select First Run (earlier):",
+                        range(len(runs)),
+                        format_func=lambda i: run_labels[i],
+                        key="run1_select"
+                    )
+                
+                with col2:
+                    # Only allow selecting runs that are after the first run chronologically
+                    default_idx = max(0, selected_run1_idx - 1)
+                    selected_run2_idx = st.selectbox(
+                        "Select Second Run (later):",
+                        range(len(runs)),
+                        index=default_idx,
+                        format_func=lambda i: run_labels[i],
+                        key="run2_select"
+                    )
+                
+                if selected_run1_idx != selected_run2_idx:
+                    run_id_1 = run_ids[selected_run1_idx]
+                    run_id_2 = run_ids[selected_run2_idx]
+                    
+                    # Get comparison
+                    comparison_df = tracker.compare_runs(run_id_1, run_id_2)
+                    
+                    if comparison_df is not None:
+                        st.markdown("---")
+                        
+                        # Display comparison stats
+                        col1, col2, col3, col4 = st.columns(4)
+                        
+                        with col1:
+                            improved_count = len(comparison_df[comparison_df['Status'] == 'improved'])
+                            st.metric("✅ Improved", improved_count)
+                        
+                        with col2:
+                            worsened_count = len(comparison_df[comparison_df['Status'] == 'worsened'])
+                            st.metric("⚠️ Worsened", worsened_count)
+                        
+                        with col3:
+                            new_count = len(comparison_df[comparison_df['Status'] == 'new'])
+                            st.metric("🆕 New", new_count)
+                        
+                        with col4:
+                            resolved_count = len(comparison_df[comparison_df['Status'] == 'resolved'])
+                            st.metric("✔️ Resolved", resolved_count)
+                        
+                        st.markdown("---")
+                        
+                        # Display comparison table with color coding
+                        st.markdown("### Detailed Comparison")
+                        
+                        # Create styled dataframe
+                        def style_status(val):
+                            if val == 'improved':
+                                return 'background-color: #90EE90; color: green; font-weight: bold;'
+                            elif val == 'worsened':
+                                return 'background-color: #FFB6C6; color: red; font-weight: bold;'
+                            elif val == 'new':
+                                return 'background-color: #FFE4B5; color: orange; font-weight: bold;'
+                            elif val == 'resolved':
+                                return 'background-color: #87CEEB; color: blue; font-weight: bold;'
+                            else:
+                                return ''
+                        
+                        # Display the comparison table
+                        st.dataframe(
+                            comparison_df,
+                            use_container_width=True,
+                            height=500,
+                            hide_index=True
+                        )
+                    else:
+                        st.error("Could not compare the selected runs.")
+                else:
+                    st.warning("Please select two different runs to compare.")
+            
+            with history_view2:
+                st.markdown("### RPN Trend Chart")
+                
+                trend_data = tracker.get_trend_data(limit=5)
+                
+                if trend_data["run_labels"]:
+                    st.markdown("**Top 5 Failure Modes Over Time**")
+                    
+                    # Prepare data for line chart
+                    trend_df_data = {
+                        "Run": trend_data["run_labels"]
+                    }
+                    
+                    for mode in trend_data["failure_modes"]:
+                        if mode in trend_data["trend_data"]:
+                            trend_df_data[mode] = trend_data["trend_data"][mode]
+                    
+                    trend_df = pd.DataFrame(trend_df_data)
+                    
+                    # Create line chart
+                    fig = px.line(
+                        trend_df,
+                        x="Run",
+                        y=trend_data["failure_modes"],
+                        title="RPN Trend for Top Failure Modes",
+                        labels={"value": "RPN", "variable": "Failure Mode"},
+                        markers=True
+                    )
+                    
+                    fig.update_xaxes(tickangle=-45)
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("Not enough runs to display trends.")
+            
+            # Display all runs as a table
+            st.markdown("---")
+            st.markdown("### 📋 All Saved Runs")
+            
+            # Convert runs to DataFrame for display
+            runs_df = pd.DataFrame([
+                {
+                    "Run ID": run['run_id'],
+                    "Label": run['label'],
+                    "Timestamp": run['timestamp'],
+                    "Row Count": run['row_count'],
+                    "Avg RPN": f"{run['average_rpn']:.1f}",
+                    "Critical Count": run['critical_count']
+                }
+                for run in runs
+            ])
+            
+            st.dataframe(runs_df, use_container_width=True, hide_index=True)
+    
+    with tab6:
         st.markdown('<div class="sub-header">Help & Documentation</div>', unsafe_allow_html=True)
         
         st.markdown("""
